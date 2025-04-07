@@ -9,6 +9,9 @@ export default NextAuth({
       clientSecret: process.env.GOOGLE_CLIENT_SECRET,
     }),
   ],
+  pages: {
+    signIn: '/auth/signin',  // ✅ 여기에 추가!
+  },
   callbacks: {
     async session({ session, token }) {
       session.user.id = token.sub;
