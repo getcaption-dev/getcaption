@@ -4,6 +4,7 @@ import Link from 'next/link';
 import Image from 'next/image';
 import Head from 'next/head';
 import Select from 'react-select';
+import { signIn, signOut, useSession } from 'next-auth/react';
 
 const purposeOptions = [
   { value: '유튜브 쇼츠 제목', label: '유튜브 쇼츠 제목 🔥' },
@@ -67,6 +68,7 @@ const LabeledSelect = ({ label, ...props }) => (
 );
 
 export default function Home() {
+  const { data: session } = useSession();
   const [keyword, setKeyword] = useState('');
   const [tone, setTone] = useState(toneOptions[0]);
   const [purpose, setPurpose] = useState(purposeOptions[0]);
@@ -114,29 +116,23 @@ export default function Home() {
         <meta property="og:url" content="https://getcaption.ai" />
         <meta property="og:image" content="/og-image.png" />
       </Head>
-      <main style={{
-        minHeight: '100vh',
-        backgroundColor: '#0A0A0A',
-        backgroundImage: 'url("/background.jpg")',
-        backgroundSize: 'cover',
-        backgroundPosition: 'center',
-        backgroundRepeat: 'no-repeat',
-        color: 'white',
-        fontFamily: 'Pretendard, sans-serif',
-        display: 'flex',
-        flexDirection: 'column',
-      }}>
-        <header style={{
-          width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-          padding: '20px 40px', boxSizing: 'border-box'
-        }}>
+      <main style={{ minHeight: '100vh', backgroundColor: '#0A0A0A', backgroundImage: 'url("/background.jpg")', backgroundSize: 'cover', backgroundPosition: 'center', backgroundRepeat: 'no-repeat', color: 'white', fontFamily: 'Pretendard, sans-serif', display: 'flex', flexDirection: 'column' }}>
+        <header style={{ width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '20px 40px', boxSizing: 'border-box' }}>
           <Link href="/" style={{ display: 'flex', alignItems: 'center', textDecoration: 'none', color: 'white' }}>
             <Image src="/smallLogo.png" alt="Logo" width={40} height={40} priority />
             <span style={{ marginLeft: '10px', fontSize: '1.5rem', fontWeight: 700 }}>GetCaption</span>
           </Link>
-          <nav style={{ display: 'flex', gap: '20px' }}>
+          <nav style={{ display: 'flex', gap: '20px', alignItems: 'center' }}>
             <Link href="/about" style={{ textDecoration: 'none', color: 'white', fontWeight: 500 }}>About</Link>
             <Link href="/contact" style={{ textDecoration: 'none', color: 'white', fontWeight: 500 }}>Contact</Link>
+            {!session ? (
+              <button onClick={() => signIn('google')} style={{ background: 'white', color: '#333', padding: '6px 12px', borderRadius: '8px', fontWeight: 500 }}>로그인</button>
+            ) : (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <span style={{ fontSize: '0.9rem' }}>{session.user.name}님</span>
+                <button onClick={() => signOut()} style={{ background: 'white', color: '#333', padding: '6px 12px', borderRadius: '8px', fontWeight: 500 }}>로그아웃</button>
+              </div>
+            )}
           </nav>
         </header>
 
