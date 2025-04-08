@@ -1,4 +1,5 @@
 // ✅ getcaption/pages/index.js
+// 페이지 렌더링에 필요한 주요 라이브러리 import
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import Image from 'next/image';
@@ -6,6 +7,7 @@ import Head from 'next/head';
 import Select from 'react-select';
 import { signIn, signOut, useSession } from 'next-auth/react';
 
+// 선택 항목 옵션 정의: 문장 목적 / 톤 / 길이
 const purposeOptions = [
   { value: '유튜브 쇼츠 제목', label: '유튜브 쇼츠 제목 🔥' },
   { value: '유튜브 롱폼 제목', label: '유튜브 롱폼 제목 🔥' },
@@ -32,6 +34,7 @@ const lengthOptions = [
   { value: '짧게', label: '짧게' },
 ];
 
+// react-select에 전달할 커스텀 스타일 정의
 const customSelectStyles = {
   control: (base) => ({
     ...base,
@@ -60,6 +63,7 @@ const customSelectStyles = {
   }),
 };
 
+// 공통 select 라벨 + 컴포넌트 래퍼
 const LabeledSelect = ({ label, ...props }) => (
   <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'start' }}>
     <label style={{ fontSize: '0.9rem', marginBottom: '4px', marginLeft: '4px' }}>{label}</label>
@@ -88,11 +92,15 @@ const saveCaption = async (text, index) => {
 };
 
 export default function Home() {
-  const { data: session } = useSession();
+  const { data: session } = useSession(); // 로그인 여부 확인
+
+  // 입력/선택값 관리
   const [keyword, setKeyword] = useState('');
   const [tone, setTone] = useState(toneOptions[0]);
   const [purpose, setPurpose] = useState(purposeOptions[0]);
   const [length, setLength] = useState(lengthOptions[0]);
+  
+   // 결과 및 UI 관련 상태 관리
   const [captions, setCaptions] = useState([]);
   const [copiedIndex, setCopiedIndex] = useState(null);
   const [invalid, setInvalid] = useState(false);
@@ -103,9 +111,11 @@ export default function Home() {
   const [loginModalOpen, setLoginModalOpen] = useState(false);
   const [isHoveringGoogle, setIsHoveringGoogle] = useState(false);
   const [profileBoxOpen, setProfileBoxOpen] = useState(false);
+
+  // 생성 횟수 및 제한 여부 관리
   const [generationCount, setGenerationCount] = useState(0);
   const [isLimitReached, setIsLimitReached] = useState(false);
-  
+  const remaining = 5 - generationCount;
 
   useEffect(() => {
     if (captions.length > 0) {
@@ -120,20 +130,6 @@ export default function Home() {
       };
     }
   }, [captions]);
-
-  useEffect(() => {
-    const today = new Date().toISOString().split('T')[0];
-    const stored = JSON.parse(localStorage.getItem('generationLimit') || '{}');
-  
-    if (stored.date !== today) {
-      localStorage.setItem('generationLimit', JSON.stringify({ count: 0, date: today }));
-      setGenerationCount(0);
-      setIsLimitReached(false);
-    } else {
-      setGenerationCount(stored.count || 0);
-      setIsLimitReached((stored.count || 0) >= 5);
-    }
-  }, []);
 
   useEffect(() => {
     const today = new Date().toISOString().split('T')[0];
@@ -160,7 +156,7 @@ export default function Home() {
   }, [session]);
 
   const generateCaptions = async () => {
-    if (isLimitReached) return;
+    if (isLimitReached) return;// 제한 도달 시 early return
 
     if (!keyword.trim()) {
       setInvalid(true);
@@ -169,6 +165,7 @@ export default function Home() {
     }
 
     try {
+       // OpenAI 기반 문장 생성 API 호출
       const response = await fetch('/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -176,11 +173,13 @@ export default function Home() {
       });
 
       const data = await response.json();
+
+      // 문장 생성 성공 시 상태 업데이트
       if (data.captions) {
         setCaptions(data.captions); 
-        // ✅ 로그인 여부에 따라 분기 처리
-        console.error('트랙시작');
         
+        // ✅ 로그인 여부에 따라 분기 처리
+        // 사용 기록 저장: 로그인 여부에 따라 Supabase 테이블 분기
         let track;
         if (session) {
           track = await fetch('/api/trackUsage', { method: 'POST' });
@@ -188,18 +187,23 @@ export default function Home() {
           track = await fetch('/api/trackAnonUsage', { method: 'POST' });
         }
 
-        if (track.ok) {
-          setGenerationCount((prev) => prev + 1);
-          if (generationCount + 1 >= 5) setIsLimitReached(true);
+        const trackData = await track.json();
+        if (track.ok && trackData.success) {
+          setGenerationCount((prev) => {
+            const next = prev + 1;
+            if (next >= 5) setIsLimitReached(true);
+            return next;
+          });
         } else {
-          console.error('사용 기록 저장 실패');
+          console.error('⚠️ 사용 기록 저장 실패:', trackData.error || '알 수 없는 에러');
         }
       }
     } catch (error) {
       console.error('문구 생성 실패:', error);
     }
   };
-
+// 개별 문장을 복사하는 함수
+  // 복사 완료 후 해당 인덱스를 저장해 UI에 '복사 완료' 표시 → 2초 후 자동 초기화
   const copyToClipboard = (text, index) => {
     navigator.clipboard.writeText(text)
       .then(() => {
@@ -209,6 +213,7 @@ export default function Home() {
       .catch(err => console.error('복사 실패:', err));
   };
 
+  // 전체 문장을 부드러운 말투로 일괄 리프레이징 (tone은 하드코딩된 '부드럽게')
   const handleBatchRephrase = async () => {
     setLoadingRephrase(true);
     try {
@@ -220,31 +225,33 @@ export default function Home() {
             body: JSON.stringify({ text, tone: '부드럽게' }),
           });
           const data = await res.json();
-          return data.rephrased || text;
+          return data.rephrased || text; // 재작성된 문장이 없으면 기존 텍스트 유지
         })
       );
-      setCaptions(results); // 💥 기존 상태 자체를 덮어씀
+      setCaptions(results); // 결과로 받은 문장 배열을 상태에 반영
     } catch (err) {
       console.error('리프레이징 실패:', err);
     }
     setLoadingRephrase(false);
   };
     
+  // 개별 문장을 저장 목록에 추가 (중복 방지)
   const saveCaptionLocally = (text) => {
     if (!savedCaptions.includes(text)) {
       setSavedCaptions((prev) => [...prev, text]);
     }
   };
-  
+
+  // 저장된 문장을 .txt 또는 .csv 형식으로 다운로드
   const handleDownload = () => {
     const content = downloadType === 'csv'
       ? savedCaptions.map((c) => `"${c.replace(/"/g, '""')}"`).join(',\n')
       : savedCaptions.join('\n');
-  
-    // UTF-8 BOM 추가 (엑셀/메모장 한글 깨짐 방지용)
+
+    // BOM 추가 → 엑셀/메모장에서 한글 깨짐 방지
     const BOM = '\uFEFF';
     const blob = new Blob([BOM + content], { type: 'text/plain;charset=utf-8' });
-  
+
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -252,10 +259,11 @@ export default function Home() {
     a.click();
     URL.revokeObjectURL(url);
   };
-  
+
+  // 저장된 모든 문장을 클립보드에 복사
   const handleCopyAll = () => {
     if (savedCaptions.length === 0) return;
-  
+
     const joined = savedCaptions.join('\n');
     navigator.clipboard.writeText(joined)
       .then(() => {
@@ -267,10 +275,12 @@ export default function Home() {
       });
   };
 
+  // 특정 문장 인덱스 삭제
   const removeSavedCaption = (index) => {
     setSavedCaptions((prev) => prev.filter((_, i) => i !== index));
   };
 
+  // 저장된 전체 문장을 삭제 (사용자 확인 포함)
   const clearSavedCaptions = () => {
     const confirmed = window.confirm('⚠ 정말 모든 문장을 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.');
     if (confirmed) {
@@ -477,26 +487,26 @@ export default function Home() {
               </button>
               </div>
               {generationCount < 5 && (
-                  <p style={{
-                    fontSize: '0.9rem',
-                    color: generationCount >= 4 ? '#F59E0B' : '#D1D5DB',
-                    marginTop: '8px',
-                    textAlign: 'center'
-                  }}>
-                    오늘 {generationCount}/5회 사용하셨습니다
-                  </p>
-                )}
+                <p style={{
+                  fontSize: '0.9rem',
+                  color: remaining <= 1 ? '#F87171' : remaining <= 2 ? '#F59E0B' : '#D1D5DB',
+                  marginTop: '8px',
+                  textAlign: 'center'
+                }}>
+                  오늘 남은 횟수: {remaining}/5회
+                </p>
+              )}
 
-                {isLimitReached && (
-                  <p style={{
-                    fontSize: '0.9rem',
-                    color: '#F87171',
-                    marginTop: '8px',
-                    textAlign: 'center'
-                  }}>
-                    ⛔ 무료 플랜은 하루 5회까지만 생성할 수 있어요
-                  </p>
-                )}
+              {isLimitReached && (
+                <p style={{
+                  fontSize: '0.9rem',
+                  color: '#F87171',
+                  marginTop: '8px',
+                  textAlign: 'center'
+                }}>
+                  ⛔ 무료 플랜은 하루 5회까지만 생성할 수 있어요
+                </p>
+              )}
             </div>
           </div>
           
