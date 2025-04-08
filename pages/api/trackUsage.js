@@ -12,6 +12,7 @@ export default async function handler(req, res) {
 
   // 로그인된 사용자 세션 확인
   const session = await getServerSession(req, res, authOptions);
+  console.log('[trackUsage] session:', session); 
   if (!session) return res.status(401).json({ error: 'Unauthorized' });
 
   // Supabase에 사용자 생성 요청 기록 insert
