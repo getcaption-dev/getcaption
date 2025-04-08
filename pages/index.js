@@ -67,6 +67,26 @@ const LabeledSelect = ({ label, ...props }) => (
   </div>
 );
 
+const saveCaption = async (text, index) => {
+  try {
+    const res = await fetch('/api/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+
+    const data = await res.json();
+    if (data.success) {
+      setSavedIndex((prev) => [...prev, index]); // 저장 완료된 인덱스 추가
+    } else {
+      alert('❌ 저장 실패: ' + data.error);
+    }
+  } catch (error) {
+    console.error('저장 중 오류:', error);
+    alert('❌ 저장 중 오류가 발생했습니다.');
+  }
+};
+
 export default function Home() {
   const { data: session } = useSession();
   const [keyword, setKeyword] = useState('');
@@ -76,22 +96,105 @@ export default function Home() {
   const [captions, setCaptions] = useState([]);
   const [copiedIndex, setCopiedIndex] = useState(null);
   const [invalid, setInvalid] = useState(false);
+  const [loadingRephrase, setLoadingRephrase] = useState(false);
+  const [savedIndex, setSavedIndex] = useState([]);
+  const [savedCaptions, setSavedCaptions] = useState([]);
+  const [downloadType, setDownloadType] = useState('txt'); // 'txt' or 'csv'
+  const [loginModalOpen, setLoginModalOpen] = useState(false);
+  const [isHoveringGoogle, setIsHoveringGoogle] = useState(false);
+  const [profileBoxOpen, setProfileBoxOpen] = useState(false);
+  const [generationCount, setGenerationCount] = useState(0);
+  const [isLimitReached, setIsLimitReached] = useState(false);
+  
 
+  useEffect(() => {
+    if (captions.length > 0) {
+      const handleBeforeUnload = (e) => {
+        e.preventDefault();
+        e.returnValue = ''; // 대부분의 브라우저는 이것만 있으면 경고 띄움
+      };
+  
+      window.addEventListener('beforeunload', handleBeforeUnload);
+      return () => {
+        window.removeEventListener('beforeunload', handleBeforeUnload);
+      };
+    }
+  }, [captions]);
+
+  useEffect(() => {
+    const today = new Date().toISOString().split('T')[0];
+    const stored = JSON.parse(localStorage.getItem('generationLimit') || '{}');
+  
+    if (stored.date !== today) {
+      localStorage.setItem('generationLimit', JSON.stringify({ count: 0, date: today }));
+      setGenerationCount(0);
+      setIsLimitReached(false);
+    } else {
+      setGenerationCount(stored.count || 0);
+      setIsLimitReached((stored.count || 0) >= 5);
+    }
+  }, []);
+
+  useEffect(() => {
+    const today = new Date().toISOString().split('T')[0];
+  
+    const check = async () => {
+      if (session) {
+        const res = await fetch('/api/checkUsage');
+        const data = await res.json();
+        if (res.ok) {
+          setGenerationCount(data.count);
+          setIsLimitReached(data.count >= 5);
+        }
+      } else {
+        const res = await fetch('/api/checkAnonUsage');
+        const data = await res.json();
+        if (res.ok) {
+          setGenerationCount(data.count);
+          setIsLimitReached(data.count >= 5);
+        }
+      }
+    };
+  
+    check();
+  }, [session]);
 
   const generateCaptions = async () => {
+    if (isLimitReached) return;
+
     if (!keyword.trim()) {
       setInvalid(true);
       setTimeout(() => setInvalid(false), 500);
       return;
     }
+
     try {
       const response = await fetch('/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ keyword, tone: tone.value, purpose: purpose.value, length: length.value }),
       });
+
       const data = await response.json();
-      if (data.captions) setCaptions(data.captions);
+      if (data.captions) {
+        setCaptions(data.captions); 
+        // ✅ 로그인 여부에 따라 분기 처리
+        console.error('트랙시작');
+        
+        let track;
+        if (session) {
+          track = await fetch('/api/trackUsage', { method: 'POST' });
+        } else {
+          track = await fetch('/api/trackAnonUsage', { method: 'POST' });
+        }
+
+        if (track.ok) {
+          setGenerationCount((prev) => prev + 1);
+          if (generationCount + 1 >= 5) setIsLimitReached(true);
+        } else {
+          console.error('사용 기록 저장 실패');
+        }
+      }
     } catch (error) {
       console.error('문구 생성 실패:', error);
     }
@@ -104,6 +207,75 @@ export default function Home() {
         setTimeout(() => setCopiedIndex(null), 2000);
       })
       .catch(err => console.error('복사 실패:', err));
+  };
+
+  const handleBatchRephrase = async () => {
+    setLoadingRephrase(true);
+    try {
+      const results = await Promise.all(
+        captions.map(async (text) => {
+          const res = await fetch('/api/rephrase', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text, tone: '부드럽게' }),
+          });
+          const data = await res.json();
+          return data.rephrased || text;
+        })
+      );
+      setCaptions(results); // 💥 기존 상태 자체를 덮어씀
+    } catch (err) {
+      console.error('리프레이징 실패:', err);
+    }
+    setLoadingRephrase(false);
+  };
+    
+  const saveCaptionLocally = (text) => {
+    if (!savedCaptions.includes(text)) {
+      setSavedCaptions((prev) => [...prev, text]);
+    }
+  };
+  
+  const handleDownload = () => {
+    const content = downloadType === 'csv'
+      ? savedCaptions.map((c) => `"${c.replace(/"/g, '""')}"`).join(',\n')
+      : savedCaptions.join('\n');
+  
+    // UTF-8 BOM 추가 (엑셀/메모장 한글 깨짐 방지용)
+    const BOM = '\uFEFF';
+    const blob = new Blob([BOM + content], { type: 'text/plain;charset=utf-8' });
+  
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `saved_captions.${downloadType}`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+  
+  const handleCopyAll = () => {
+    if (savedCaptions.length === 0) return;
+  
+    const joined = savedCaptions.join('\n');
+    navigator.clipboard.writeText(joined)
+      .then(() => {
+        alert('📋 저장된 문장들이 클립보드에 복사되었습니다!');
+      })
+      .catch((err) => {
+        console.error('복사 실패:', err);
+        alert('❌ 복사 실패!');
+      });
+  };
+
+  const removeSavedCaption = (index) => {
+    setSavedCaptions((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const clearSavedCaptions = () => {
+    const confirmed = window.confirm('⚠ 정말 모든 문장을 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.');
+    if (confirmed) {
+      setSavedCaptions([]);
+    }
   };
 
   return (
@@ -126,11 +298,114 @@ export default function Home() {
             <Link href="/about" style={{ textDecoration: 'none', color: 'white', fontWeight: 500 }}>About</Link>
             <Link href="/contact" style={{ textDecoration: 'none', color: 'white', fontWeight: 500 }}>Contact</Link>
             {!session ? (
-              <button onClick={() => signIn('google')} style={{ background: 'white', color: '#333', padding: '6px 12px', borderRadius: '8px', fontWeight: 500 }}>로그인</button>
+              <button
+                onClick={() => setLoginModalOpen(true)}
+                style={{
+                  background: '#000',
+                  color: '#1F2937',
+                  backgroundColor: '#E5E7EB',
+                  padding: '10px 20px',
+                  borderRadius: '9999px',
+                  fontWeight: 600,
+                  fontSize: '0.95rem',
+                  border: 'none',
+                  cursor: 'pointer'
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#F3F4F6')}
+                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = '#E5E7EB')}
+              >
+                로그인
+              </button>
             ) : (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <span style={{ fontSize: '0.9rem' }}>{session.user.name}님</span>
-                <button onClick={() => signOut()} style={{ background: 'white', color: '#333', padding: '6px 12px', borderRadius: '8px', fontWeight: 500 }}>로그아웃</button>
+              <div
+                onClick={() => setProfileBoxOpen(!profileBoxOpen)}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '10px',
+                  backgroundColor: '#E5E7EB',
+                  padding: '6px 12px',
+                  borderRadius: '12px',
+                  cursor: 'pointer',
+                  fontWeight: 500,
+                  color: '#1F2937',
+                  position: 'relative'
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#F3F4F6')}
+                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = '#E5E7EB')}
+              >
+                <div style={{
+                  width: '28px',
+                  height: '28px',
+                  borderRadius: '50%',
+                  backgroundColor: '#93C5FD',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: 'white',
+                  fontWeight: 600
+                }}>
+                  {session.user.name[0].toUpperCase()}
+                </div>
+                <span style={{ fontSize: '0.9rem' }}>{session.user.email}</span>
+                <span>{profileBoxOpen ? '▲' : '▼'}</span>
+
+                {profileBoxOpen && (
+                  <div style={{
+                    position: 'absolute',
+                    top: '120%',
+                    right: 0,
+                    background: 'white',
+                    borderRadius: '12px',
+                    boxShadow: '0 6px 16px rgba(0,0,0,0.15)',
+                    padding: '12px',
+                    minWidth: '160px',
+                    zIndex: 1000
+                  }}>
+                    <div style={{
+                      padding: '8px 12px',
+                      fontSize: '0.9rem',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      cursor: 'pointer',
+                      borderRadius: '8px',
+                    }}
+                    onMouseOver={(e) => (e.currentTarget.style.backgroundColor = '#F9FAFB')}
+                    onMouseOut={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+                    onClick={() => alert('계정 설정 페이지로 이동 예정')}>
+                      ⚙️ 계정 설정
+                    </div>
+                    <div style={{
+                      padding: '8px 12px',
+                      fontSize: '0.9rem',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      cursor: 'pointer',
+                      borderRadius: '8px',
+                    }}
+                    onMouseOver={(e) => (e.currentTarget.style.backgroundColor = '#F9FAFB')}
+                    onMouseOut={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+                    onClick={() => alert('구독 관리 페이지로 이동 예정')}>
+                      💳 구독 관리
+                    </div>
+                    <div style={{
+                      padding: '8px 12px',
+                      fontSize: '0.9rem',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      cursor: 'pointer',
+                      borderRadius: '8px',
+                    }}
+                    onMouseOver={(e) => (e.currentTarget.style.backgroundColor = '#FEE2E2')}
+                    onMouseOut={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+                    onClick={() => signOut()}>
+                      🚪 로그아웃
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </nav>
@@ -183,24 +458,343 @@ export default function Home() {
                 }}
               />
               <div style={{ display: 'flex', justifyContent: 'center', width: '100%' }}>
-                <button onClick={generateCaptions} style={{ padding: '12px 20px', backgroundColor: '#6366F1', color: 'white', border: 'none', borderRadius: '10px', fontWeight: 600, fontSize: '1rem', cursor: 'pointer', boxShadow: '0 2px 5px rgba(99,102,241,0.5)', transition: 'background-color 0.3s' }} onMouseOver={(e) => e.currentTarget.style.backgroundColor = '#818CF8'} onMouseOut={(e) => e.currentTarget.style.backgroundColor = '#6366F1'}>
-                  문구 생성
-                </button>
+              <button
+                onClick={generateCaptions}
+                disabled={isLimitReached}
+                style={{
+                  padding: '12px 20px',
+                  backgroundColor: isLimitReached ? '#9CA3AF' : '#6366F1',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '10px',
+                  fontWeight: 600,
+                  fontSize: '1rem',
+                  cursor: isLimitReached ? 'not-allowed' : 'pointer',
+                  boxShadow: '0 2px 5px rgba(99,102,241,0.5)',
+                  transition: 'background-color 0.3s'
+                }}>
+                {isLimitReached ? '⛔ 오늘은 더 이상 생성할 수 없어요' : '문구 생성'}
+              </button>
               </div>
+              {generationCount < 5 && (
+                  <p style={{
+                    fontSize: '0.9rem',
+                    color: generationCount >= 4 ? '#F59E0B' : '#D1D5DB',
+                    marginTop: '8px',
+                    textAlign: 'center'
+                  }}>
+                    오늘 {generationCount}/5회 사용하셨습니다
+                  </p>
+                )}
+
+                {isLimitReached && (
+                  <p style={{
+                    fontSize: '0.9rem',
+                    color: '#F87171',
+                    marginTop: '8px',
+                    textAlign: 'center'
+                  }}>
+                    ⛔ 무료 플랜은 하루 5회까지만 생성할 수 있어요
+                  </p>
+                )}
             </div>
           </div>
-
+          
           <div style={{ marginTop: '20px', width: '100%', maxWidth: '600px' }}>
             {captions.map((cap, i) => (
-              <div key={i} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', backgroundColor: 'rgba(255, 255, 255, 0.1)', padding: '15px 20px', borderRadius: '10px', marginBottom: '15px', backdropFilter: 'blur(4px)' }}>
-                <span style={{ textAlign: 'left' }}>{cap}</span>
-                <button onClick={() => copyToClipboard(cap, i)} style={{ padding: '8px 14px', backgroundColor: copiedIndex === i ? '#10B981' : '#6366F1', border: 'none', borderRadius: '8px', color: 'white', fontWeight: '600', cursor: 'pointer', fontSize: '0.9rem', transition: 'background-color 0.3s' }}>
-                  {copiedIndex === i ? '✅ 복사 완료' : '복사'}
-                </button>
+              <div
+                key={i}
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  backgroundColor: 'rgba(255, 255, 255, 0.1)',
+                  padding: '15px 20px',
+                  borderRadius: '10px',
+                  marginBottom: '15px',
+                  backdropFilter: 'blur(4px)',
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ textAlign: 'left', flex: 1 }}>{cap}</span>
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <button
+                      onClick={() => copyToClipboard(cap, i)}
+                      style={{
+                        padding: '8px 14px',
+                        backgroundColor: copiedIndex === i ? '#10B981' : '#6366F1',
+                        border: 'none',
+                        borderRadius: '8px',
+                        color: 'white',
+                        fontWeight: '600',
+                        cursor: 'pointer',
+                        fontSize: '0.85rem',
+                      }}
+                    >
+                      {copiedIndex === i ? '✅ 복사 완료' : '복사'}
+                    </button>
+                    <button
+                      onClick={() => saveCaptionLocally(cap)}
+                      disabled={savedCaptions.includes(cap)}
+                      style={{
+                        padding: '8px 14px',
+                        backgroundColor: savedCaptions.includes(cap) ? '#10B981' : '#F97316',
+                        border: 'none',
+                        borderRadius: '8px',
+                        color: 'white',
+                        fontWeight: '600',
+                        cursor: savedCaptions.includes(cap) ? 'default' : 'pointer',
+                        fontSize: '0.85rem',
+                      }}
+                    >
+                      {savedCaptions.includes(cap) ? '✅ 완료' : '저장'}
+                    </button>
+                  </div>
+                </div>
               </div>
             ))}
           </div>
+          {captions.length > 0 && (
+            <button
+              onClick={handleBatchRephrase}
+              style={{
+                marginTop: '20px',
+                padding: '12px 20px',
+                backgroundColor: loadingRephrase ? '#9CA3AF' : '#9c990e',
+                color: 'white',
+                border: 'none',
+                borderRadius: '10px',
+                fontWeight: 600,
+                fontSize: '1rem',
+                cursor: loadingRephrase ? 'not-allowed' : 'pointer',
+                boxShadow: '0 2px 5px rgba(0,0,0,0.2)',
+              }}
+              disabled={loadingRephrase}
+            >
+              {loadingRephrase ? '부드럽게 다시 쓰는 중...' : '생성된 문장 모두 부드럽게 다시 쓰기'}
+            </button>
+          )}
         </section>
+        {savedCaptions.length > 0 && (
+          <div style={{
+            position: 'fixed',
+            right: '20px',
+            top: '100px',
+            width: '300px',
+            background: '#1F2937',
+            padding: '20px',
+            borderRadius: '12px',
+            boxShadow: '0 4px 12px rgba(0,0,0,0.2)',
+            zIndex: 1000,
+          }}>
+            <h3 style={{ fontWeight: 600, fontSize: '1.1rem', marginBottom: '10px' }}>📋 저장된 문장</h3>
+            
+            <ul style={{ listStyle: 'none', padding: 0, marginBottom: '15px' }}>
+              {savedCaptions.map((txt, idx) => (
+                <li key={idx} style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  marginBottom: '6px',
+                  fontSize: '0.95rem',
+                  color: '#E5E7EB'
+                }}>
+                  <span style={{ flex: 1 }}>• {txt}</span>
+                  <button
+                    onClick={() => removeSavedCaption(idx)}
+                    style={{
+                      marginLeft: '8px',
+                      background: 'transparent',
+                      border: 'none',
+                      color: '#F87171',
+                      cursor: 'pointer',
+                      fontSize: '1rem',
+                    }}
+                  >
+                    ✖
+                  </button>
+                </li>
+              ))}
+            </ul>
+
+            <div style={{
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'stretch',
+              gap: '10px',
+              marginTop: '15px'
+            }}>
+              <div style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                gap: '10px'
+              }}>
+                <button
+                  onClick={() => setDownloadType('txt')}
+                  style={{
+                    flex: 1,
+                    padding: '6px 10px',
+                    backgroundColor: downloadType === 'txt' ? '#3B82F6' : '#374151',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '6px',
+                    cursor: 'pointer',
+                    fontSize: '0.85rem'
+                  }}
+                >
+                  .txt
+                </button>
+                <button
+                  onClick={() => setDownloadType('csv')}
+                  style={{
+                    flex: 1,
+                    padding: '6px 10px',
+                    backgroundColor: downloadType === 'csv' ? '#3B82F6' : '#374151',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '6px',
+                    cursor: 'pointer',
+                    fontSize: '0.85rem'
+                  }}
+                >
+                  .csv
+                </button>
+              </div>
+              <button
+                onClick={handleCopyAll}
+                style={{
+                  padding: '8px 12px',
+                  background: '#4B5563',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '8px',
+                  fontWeight: 600,
+                  cursor: 'pointer'
+                }}>
+                📋 전체 복사
+              </button>
+              <button onClick={handleDownload} style={{
+                padding: '8px 12px',
+                background: '#10B981',
+                color: 'white',
+                border: 'none',
+                borderRadius: '8px',
+                fontWeight: 600,
+                cursor: 'pointer'
+              }}>
+                📥 다운로드
+              </button>
+
+              <button
+                onClick={clearSavedCaptions}
+                style={{
+                  padding: '8px 12px',
+                  background: '#EF4444',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '8px',
+                  fontWeight: 600,
+                  cursor: 'pointer'
+                }}
+              >
+                🗑️ 전체 삭제
+              </button>
+            </div>
+          </div>
+        )}
+
+        {loginModalOpen && (
+          <div style={{
+            position: 'fixed',
+            top: 0, left: 0, right: 0, bottom: 0,
+            background: 'rgba(0, 0, 0, 0.5)',
+            display: 'flex',
+            justifyContent: 'center',
+            alignItems: 'center',
+            zIndex: 9999,
+          }}>
+            <div style={{
+              background: 'white',
+              borderRadius: '16px',
+              padding: '40px 30px',
+              width: '360px',
+              textAlign: 'center',
+              boxShadow: '0 10px 30px rgba(0,0,0,0.3)',
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center'
+            }}>
+              <img
+                src="/gcWChar.svg"
+                alt="GetCaption Logo"
+                style={{
+                  width: '75%', // ✅ 고정
+                  height: '60px',
+                  marginBottom: '20px'
+                }}
+              />
+
+              <h2 style={{
+                fontSize: '1.2rem',
+                color: '#4B5563',
+                fontWeight: 700,
+                marginBottom: '30px'
+              }}>
+                로그인하여 혜택 늘리기
+              </h2>
+
+              <button
+                onClick={() => signIn('google')}
+                onMouseEnter={() => setIsHoveringGoogle(true)}
+                onMouseLeave={() => setIsHoveringGoogle(false)}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  backgroundColor: isHoveringGoogle ? '#f1f3f4' : '#fff',
+                  color: '#3C4043',
+                  padding: '10px 16px',
+                  borderRadius: '6px',
+                  border: '1px solid #dadce0',
+                  fontSize: '14px',
+                  fontWeight: 500,
+                  fontFamily: 'Roboto, sans-serif',
+                  cursor: 'pointer',
+                  boxShadow: '0 1px 2px rgba(0,0,0,0.1)',
+                  width: '100%',
+                  maxWidth: '280px',
+                  transition: 'background-color 0.2s ease-in-out'
+                }}
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 48 48"
+                  style={{ width: '20px', height: '20px', marginRight: '10px' }}
+                >
+                  <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+                  <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+                  <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+                  <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+                  <path fill="none" d="M0 0h48v48H0z"/>
+                </svg>
+                Google 계정으로 로그인
+              </button>
+
+              <button
+                onClick={() => setLoginModalOpen(false)}
+                style={{
+                  background: 'transparent',
+                  color: '#6B7280',
+                  fontSize: '0.85rem',
+                  border: 'none',
+                  cursor: 'pointer',
+                  marginTop: '10px'
+                }}
+              >
+                닫기
+              </button>
+            </div>
+          </div>
+        )}
       </main>
 
         
@@ -211,6 +805,10 @@ export default function Home() {
           50% { transform: translateX(5px); }
           75% { transform: translateX(-5px); }
           100% { transform: translateX(0); }
+        }
+        @keyframes fadeOut {
+          0% { opacity: 1; transform: translateX(0); }
+          100% { opacity: 0; transform: translateX(20px); }
         }
       `}</style>
     </>

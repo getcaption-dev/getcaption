@@ -10,8 +10,10 @@ export default NextAuth({
     }),
   ],
   pages: {
-    signIn: '/auth/signin',  // ✅ 여기에 추가!
+    signIn: '/auth/signin',
+    error: '/auth/error', // ✅ 로그인 에러 발생 시 이 페이지로 이동
   },
+  
   callbacks: {
     async session({ session, token }) {
       session.user.id = token.sub;
